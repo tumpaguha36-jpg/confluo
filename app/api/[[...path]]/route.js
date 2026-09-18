@@ -30,10 +30,18 @@ function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
   return `${salt}:${hash}`
 }
 function verifyPassword(password, stored) {
-  if (!stored || !stored.includes(':')) return false
-  const [salt, hash] = stored.split(':')
-  const test = crypto.scryptSync(password, salt, 64).toString('hex')
-  return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(test, 'hex'))
+  try {
+    if (!stored || typeof stored !== 'string' || !stored.includes(':')) return false
+    const [salt, hash] = stored.split(':')
+    if (!salt || !hash) return false
+    const test = crypto.scryptSync(password, salt, 64).toString('hex')
+    const bHash = Buffer.from(hash, 'hex')
+    const bTest = Buffer.from(test, 'hex')
+    if (bHash.length !== bTest.length) return false
+    return crypto.timingSafeEqual(bHash, bTest)
+  } catch {
+    return false
+  }
 }
 
 function publicUser(u) {
@@ -71,8 +79,9 @@ async function enrichCollaborators(db, doc) {
 }
 
 async function handleRoute(request, { params }) {
-  const { path = [] } = await params
-  const route = `/${path.join('/')}`
+  const resolvedParams = params ? await params : {}
+  const path = resolvedParams?.path || []
+  const route = `/${Array.isArray(path) ? path.join('/') : (path || '')}`
   const method = request.method
 
   try {
@@ -84,7 +93,7 @@ async function handleRoute(request, { params }) {
 
     // ---------- AUTH ----------
     if (route === '/auth/register' && method === 'POST') {
-      const body = await request.json()
+      const body = await request.json().catch(() => ({}))
       const email = (body.email || '').trim().toLowerCase()
       const password = body.password || ''
       const displayName = (body.displayName || '').trim() || email.split('@')[0]
@@ -100,24 +109,27 @@ async function handleRoute(request, { params }) {
         passwordHash: hashPassword(password),
         color: COLLAB_PALETTE[count % COLLAB_PALETTE.length],
         avatarUrl: null,
-        createdAt: new Date(),
+        createdAt: new Date().toISOString(),
       }
       await db.collection('users').insertOne(user)
       const token = uuidv4() + uuidv4()
-      await db.collection('sessions').insertOne({ token, userId: user.id, createdAt: new Date() })
+      await db.collection('sessions').insertOne({ token, userId: user.id, createdAt: new Date().toISOString() })
       return json({ user: publicUser(user), token, accessToken: token }, 201)
     }
 
     if (route === '/auth/login' && method === 'POST') {
-      const body = await request.json()
+      const body = await request.json().catch(() => ({}))
       const email = (body.email || '').trim().toLowerCase()
       const password = body.password || ''
+      if (!email || !password) {
+        return err('Email and password are required', 400)
+      }
       const user = await db.collection('users').findOne({ email })
       if (!user || !verifyPassword(password, user.passwordHash)) {
         return err('Invalid email or password', 401)
       }
       const token = uuidv4() + uuidv4()
-      await db.collection('sessions').insertOne({ token, userId: user.id, createdAt: new Date() })
+      await db.collection('sessions').insertOne({ token, userId: user.id, createdAt: new Date().toISOString() })
       return json({ user: publicUser(user), token, accessToken: token })
     }
 
@@ -406,8 +418,8 @@ async function handleRoute(request, { params }) {
 
     return err(`Route ${route} not found`, 404)
   } catch (e) {
-    console.error('API Error:', e)
-    return err('Internal server error', 500)
+    console.error('API Error on route', route, method, e)
+    return err(e?.message || 'Internal server error', 500)
   }
 }
 
