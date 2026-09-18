@@ -78,7 +78,20 @@ async function enrichCollaborators(db, doc) {
   return list
 }
 
+let collabServerStarted = false;
+function ensureCollabServer() {
+  if (collabServerStarted) return;
+  collabServerStarted = true;
+  try {
+    const { startCollabServer } = require('../../../server/collab-server');
+    startCollabServer();
+  } catch (e) {
+    // Ignore if already running
+  }
+}
+
 async function handleRoute(request, { params }) {
+  ensureCollabServer();
   const resolvedParams = params ? await params : {}
   const path = resolvedParams?.path || []
   const route = `/${Array.isArray(path) ? path.join('/') : (path || '')}`
@@ -199,6 +212,7 @@ async function handleRoute(request, { params }) {
           id: doc.id,
           title: doc.title,
           content: doc.content,
+          yjsState: doc.yjsState || null,
           role,
           ownerId: doc.ownerId,
           collaborators,
@@ -217,6 +231,10 @@ async function handleRoute(request, { params }) {
         if (body.content !== undefined) {
           if (ROLE_RANK[role] < ROLE_RANK.editor) return err('You do not have permission to edit', 403)
           update.content = body.content
+        }
+        if (body.yjsState !== undefined) {
+          if (ROLE_RANK[role] < ROLE_RANK.editor) return err('You do not have permission to edit', 403)
+          update.yjsState = body.yjsState
         }
         if (body.title !== undefined) {
           if (ROLE_RANK[role] < ROLE_RANK.editor) return err('You do not have permission to rename', 403)

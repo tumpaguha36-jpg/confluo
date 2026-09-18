@@ -8,6 +8,7 @@ import Link from '@tiptap/extension-link';
 import Placeholder from '@tiptap/extension-placeholder';
 import Collaboration from '@tiptap/extension-collaboration';
 import CollaborationCursor from '@tiptap/extension-collaboration-cursor';
+import * as Y from 'yjs';
 import { useParams, useRouter } from 'next/navigation';
 import Link2Next from 'next/link';
 import { useEffect, useState, useRef, useCallback, memo } from 'react';
@@ -411,9 +412,9 @@ function CollaborativeEditorCanvas({ provider, doc, role, user, onSaveTrigger, s
       Placeholder.configure({ placeholder: 'Start writing collaboratively…' }),
     ],
     editorProps: { attributes: { class: 'font-editor focus:outline-none' } },
-    onUpdate: ({ editor }) => {
+    onUpdate: () => {
       if (!canEdit(role)) return;
-      onSaveTrigger && onSaveTrigger(editor.getJSON());
+      onSaveTrigger && onSaveTrigger();
     },
     onSelectionUpdate: ({ editor }) => {
       const { from, to, empty } = editor.state.selection;
@@ -423,12 +424,35 @@ function CollaborativeEditorCanvas({ provider, doc, role, user, onSaveTrigger, s
     },
   }, [provider, editable]);
 
-  // Seed initial content into Y.Doc if freshly opened and Yjs XML fragment is empty
+  const seededRef = useRef(false);
+
+  // Safe initial seeding: seed only once if Y.Doc is truly empty and new
   useEffect(() => {
-    if (!editor || !doc) return;
-    const fragment = provider.doc.getXmlFragment('default');
-    if (fragment.length === 0 && doc.content) {
-      editor.commands.setContent(doc.content);
+    if (!editor || !doc || seededRef.current) return;
+
+    const trySeed = () => {
+      if (seededRef.current) return;
+      const fragment = provider.doc.getXmlFragment('default');
+      // Only seed if fragment is genuinely empty, doc has never had Yjs state, and doc has initial content
+      if (fragment.length === 0 && !doc.yjsState && doc.content && editor.isEmpty) {
+        seededRef.current = true;
+        editor.commands.setContent(doc.content);
+      } else {
+        seededRef.current = true;
+      }
+    };
+
+    if (provider.synced) {
+      trySeed();
+    } else {
+      const unsub = provider.on('synced', () => {
+        trySeed();
+      });
+      const timer = setTimeout(trySeed, 600);
+      return () => {
+        unsub && unsub();
+        clearTimeout(timer);
+      };
     }
   }, [editor, doc, provider]);
 
@@ -537,9 +561,9 @@ export default function EditorPage() {
 
   // Initialize real CRDT collaboration provider
   useEffect(() => {
-    if (!user || !id) return;
+    if (!user || !id || !doc) return;
 
-    const provider = new ConfluoCollabProvider(id, user);
+    const provider = new ConfluoCollabProvider(id, user, { initialYjsState: doc.yjsState });
     providerRef.current = provider;
 
     provider.on('status', ({ status }) => {
@@ -558,30 +582,26 @@ export default function EditorPage() {
       providerRef.current = null;
       setProviderReady(false);
     };
-  }, [id, user]);
+  }, [id, user, doc?.id]);
 
-  // Save content to backend (with offline tolerance)
-  const saveContent = useCallback(async (json) => {
-    if (!id || !canEdit(role)) return;
-    try {
-      await apiFetch(`/docs/${id}`, { method: 'PUT', body: JSON.stringify({ content: json }) });
-      setSaveState('saved');
-      setUnsynced(false);
-    } catch (e) {
-      // If offline, local changes remain preserved in Yjs and IndexedDB
-      setSaveState('offline');
-      setUnsynced(true);
-    }
-  }, [id, role]);
-
-  const onSaveTrigger = useCallback((json) => {
+  // Debounced backup persistence of Yjs CRDT state (no last-write-wins)
+  const onSaveTrigger = useCallback(() => {
+    if (!id || !canEdit(role) || !providerRef.current) return;
     setUnsynced(true);
     setSaveState('saving');
     if (contentTimer.current) clearTimeout(contentTimer.current);
-    contentTimer.current = setTimeout(() => {
-      saveContent(json);
-    }, 1200);
-  }, [saveContent]);
+    contentTimer.current = setTimeout(async () => {
+      try {
+        const updateVector = Buffer.from(Y.encodeStateAsUpdate(providerRef.current.doc)).toString('base64');
+        await apiFetch(`/docs/${id}`, { method: 'PUT', body: JSON.stringify({ yjsState: updateVector }) });
+        setSaveState('saved');
+        setUnsynced(false);
+      } catch (e) {
+        setSaveState('offline');
+        setUnsynced(true);
+      }
+    }, 1500);
+  }, [id, role]);
 
   // Toggle simulated offline mode
   const handleToggleOffline = useCallback(() => {

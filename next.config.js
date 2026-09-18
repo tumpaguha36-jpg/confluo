@@ -6,7 +6,7 @@ const nextConfig = {
       { protocol: 'https', hostname: 'avatars.githubusercontent.com', pathname: '/**' },
     ],
   },
-  serverExternalPackages: [],
+  serverExternalPackages: ['ws'],
   webpack(config, { dev }) {
     if (dev) {
       // Reduce CPU/memory from file watching

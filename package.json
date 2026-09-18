@@ -6,6 +6,7 @@
         "dev": "NODE_OPTIONS='--max-old-space-size=512' next dev --hostname 0.0.0.0 --port 3000",
         "dev:no-reload": "next dev --hostname 0.0.0.0 --port 3000",
         "dev:webpack": "next dev --hostname 0.0.0.0 --port 3000",
+        "collab": "node server/collab-server.js",
         "build": "next build",
         "start": "next start"
     },
@@ -75,6 +76,7 @@
         "tailwindcss-animate": "1.0.7",
         "uuid": "11.1.1",
         "vaul": "1.1.2",
+        "ws": "^8.21.3",
         "y-indexeddb": "^9.0.12",
         "y-prosemirror": "^1.3.7",
         "y-protocols": "^1.0.7",
