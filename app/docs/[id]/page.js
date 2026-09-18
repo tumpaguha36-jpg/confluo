@@ -33,7 +33,7 @@ import {
 import ThemeToggle from '@/components/site/ThemeToggle';
 import Logo from '@/components/site/Logo';
 import { useAuth, apiFetch } from '@/lib/auth';
-import { ConfluoCollabProvider } from '@/lib/collab-provider';
+import { ConfluoCollabProvider, uint8ArrayToBase64 } from '@/lib/collab-provider';
 import { toast } from 'sonner';
 
 const canEdit = (role) => role === 'owner' || role === 'editor';
@@ -412,9 +412,9 @@ function CollaborativeEditorCanvas({ provider, doc, role, user, onSaveTrigger, s
       Placeholder.configure({ placeholder: 'Start writing collaboratively…' }),
     ],
     editorProps: { attributes: { class: 'font-editor focus:outline-none' } },
-    onUpdate: () => {
+    onUpdate: ({ editor }) => {
       if (!canEdit(role)) return;
-      onSaveTrigger && onSaveTrigger();
+      onSaveTrigger && onSaveTrigger(editor.getJSON());
     },
     onSelectionUpdate: ({ editor }) => {
       const { from, to, empty } = editor.state.selection;
@@ -585,15 +585,17 @@ export default function EditorPage() {
   }, [id, user, doc?.id]);
 
   // Debounced backup persistence of Yjs CRDT state (no last-write-wins)
-  const onSaveTrigger = useCallback(() => {
+  const onSaveTrigger = useCallback((editorJson) => {
     if (!id || !canEdit(role) || !providerRef.current) return;
     setUnsynced(true);
     setSaveState('saving');
     if (contentTimer.current) clearTimeout(contentTimer.current);
     contentTimer.current = setTimeout(async () => {
       try {
-        const updateVector = Buffer.from(Y.encodeStateAsUpdate(providerRef.current.doc)).toString('base64');
-        await apiFetch(`/docs/${id}`, { method: 'PUT', body: JSON.stringify({ yjsState: updateVector }) });
+        const updateVector = uint8ArrayToBase64(Y.encodeStateAsUpdate(providerRef.current.doc));
+        const payload = { yjsState: updateVector };
+        if (editorJson) payload.content = editorJson;
+        await apiFetch(`/docs/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
         setSaveState('saved');
         setUnsynced(false);
       } catch (e) {

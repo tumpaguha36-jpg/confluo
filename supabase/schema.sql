@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS docs (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL DEFAULT 'Untitled document',
   content JSONB DEFAULT '{"type":"doc","content":[{"type":"paragraph"}]}'::jsonb,
+  yjs_state TEXT,
   owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   collaborators JSONB DEFAULT '[]'::jsonb,
   share_links JSONB DEFAULT '[]'::jsonb,
