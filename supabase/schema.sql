@@ -34,7 +34,17 @@ CREATE TABLE IF NOT EXISTS docs (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 4. Comments Table
+-- 4. Document Members (Collaborators) Table
+CREATE TABLE IF NOT EXISTS document_members (
+  id TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL REFERENCES docs(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role TEXT NOT NULL DEFAULT 'editor',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (document_id, user_id)
+);
+
+-- 5. Comments Table
 CREATE TABLE IF NOT EXISTS comments (
   id TEXT PRIMARY KEY,
   doc_id TEXT NOT NULL REFERENCES docs(id) ON DELETE CASCADE,
@@ -52,10 +62,13 @@ CREATE TABLE IF NOT EXISTS comments (
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_docs_owner ON docs(owner_id);
 CREATE INDEX IF NOT EXISTS idx_docs_updated_at ON docs(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_doc_members_doc_id ON document_members(document_id);
+CREATE INDEX IF NOT EXISTS idx_doc_members_user_id ON document_members(user_id);
 CREATE INDEX IF NOT EXISTS idx_comments_doc_id ON comments(doc_id);
 CREATE INDEX IF NOT EXISTS idx_comments_parent_id ON comments(parent_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
 
 -- Enable Supabase Realtime for collaborative tables
 ALTER PUBLICATION supabase_realtime ADD TABLE docs;
+ALTER PUBLICATION supabase_realtime ADD TABLE document_members;
 ALTER PUBLICATION supabase_realtime ADD TABLE comments;

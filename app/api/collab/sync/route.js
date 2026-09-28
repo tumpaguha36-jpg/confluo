@@ -5,10 +5,48 @@ export const dynamic = 'force-dynamic';
 export async function POST(request) {
   try {
     const body = await request.json().catch(() => ({}));
-    const { docId, type, update, senderId, vector } = body;
+    const { docId, type, update, senderId, vector, token: bodyToken } = body;
 
     if (!docId || !type) {
       return NextResponse.json({ error: 'Missing docId or type' }, { status: 400 });
+    }
+
+    const authHeader = request.headers.get('authorization') || '';
+    const token = (authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '') || bodyToken;
+
+    const { getDb } = require('@/lib/db');
+    const db = await getDb();
+    let user = null;
+    if (token) {
+      const session = await db.collection('sessions').findOne({ token });
+      if (session) {
+        user = await db.collection('users').findOne({ id: session.userId });
+      }
+    }
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized: invalid or missing session token' }, { status: 401 });
+    }
+
+    const doc = await db.collection('docs').findOne({ id: docId });
+    if (!doc) {
+      return NextResponse.json({ error: 'Document not found' }, { status: 404 });
+    }
+
+    const collabs = Array.isArray(doc.collaborators)
+      ? doc.collaborators
+      : (typeof doc.collaborators === 'string' ? JSON.parse(doc.collaborators || '[]') : []);
+    const isOwner = doc.ownerId === user.id;
+    const member = collabs.find((c) => c.userId === user.id);
+    const role = isOwner ? 'owner' : (member ? member.role : null);
+
+    if (!role) {
+      return NextResponse.json({ error: 'Access denied: not a collaborator on this document' }, { status: 403 });
+    }
+
+    // Viewers cannot push updates
+    if (role === 'viewer' && (type === 'update' || type === 'sync-step-2')) {
+      return NextResponse.json({ error: 'Viewers cannot edit' }, { status: 403 });
     }
 
     // Bridge update into in-memory room if collab server is running in-process

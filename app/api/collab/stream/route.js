@@ -22,6 +22,44 @@ export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const docId = searchParams.get('docId') || 'default';
   const clientId = searchParams.get('clientId') || Math.random().toString(36).slice(2);
+  const authHeader = request.headers.get('authorization') || '';
+  const token = (authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '') || searchParams.get('token');
+
+  const { getDb } = require('@/lib/db');
+  const db = await getDb();
+  let user = null;
+  if (token) {
+    const session = await db.collection('sessions').findOne({ token });
+    if (session) {
+      user = await db.collection('users').findOne({ id: session.userId });
+    }
+  }
+
+  if (!user) {
+    return new Response(JSON.stringify({ error: 'Unauthorized: invalid or missing token' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const doc = await db.collection('docs').findOne({ id: docId });
+  if (!doc) {
+    return new Response(JSON.stringify({ error: 'Document not found' }), {
+      status: 404,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const collabs = Array.isArray(doc.collaborators)
+    ? doc.collaborators
+    : (typeof doc.collaborators === 'string' ? JSON.parse(doc.collaborators || '[]') : []);
+  const hasAccess = doc.ownerId === user.id || collabs.some((c) => c.userId === user.id);
+  if (!hasAccess) {
+    return new Response(JSON.stringify({ error: 'Access denied: not a collaborator on this document' }), {
+      status: 403,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
 
   let streamController = null;
   let keepAliveTimer = null;

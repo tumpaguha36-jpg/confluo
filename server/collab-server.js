@@ -152,12 +152,61 @@ function startCollabServer(port = PORT) {
   wss = new WebSocketServer({ server });
 
   wss.on('connection', async (ws, req) => {
-    // Extract docId from URL path or query (e.g., /doc-123 or ?docId=doc-123)
+    // Extract docId and token from URL path or query
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     let docId = url.searchParams.get('docId') || url.pathname.replace(/^\/+/, '').split('/')[0];
     if (!docId || docId === 'health') {
       docId = 'default';
     }
+    const token = url.searchParams.get('token') || (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
+
+    // Authenticate user & verify document access
+    let user = null;
+    let role = null;
+
+    try {
+      const { getDb } = require('../lib/db');
+      const db = await getDb();
+      if (token) {
+        const session = await db.collection('sessions').findOne({ token });
+        if (session) {
+          user = await db.collection('users').findOne({ id: session.userId });
+        }
+      }
+
+      if (!user) {
+        ws.send(JSON.stringify({ type: 'error', error: 'Unauthorized: invalid or missing session token' }));
+        ws.close(4401, 'Unauthorized');
+        return;
+      }
+
+      const doc = await db.collection('docs').findOne({ id: docId });
+      if (!doc) {
+        ws.send(JSON.stringify({ type: 'error', error: 'Document not found' }));
+        ws.close(4404, 'Document not found');
+        return;
+      }
+
+      const isOwner = doc.ownerId === user.id;
+      const collabs = Array.isArray(doc.collaborators)
+        ? doc.collaborators
+        : (typeof doc.collaborators === 'string' ? JSON.parse(doc.collaborators || '[]') : []);
+      const collab = collabs.find((c) => c.userId === user.id);
+      role = isOwner ? 'owner' : (collab ? collab.role : null);
+
+      if (!role) {
+        ws.send(JSON.stringify({ type: 'error', error: 'Access denied: not a collaborator on this document' }));
+        ws.close(4403, 'Access denied');
+        return;
+      }
+    } catch (authErr) {
+      console.error('[Collab] Auth check error:', authErr.message);
+      ws.close(4500, 'Internal server error');
+      return;
+    }
+
+    ws.userId = user.id;
+    ws.userRole = role;
 
     const room = await getOrCreateRoom(docId);
     if (room.loadingPromise) {
@@ -223,6 +272,10 @@ function startCollabServer(port = PORT) {
             );
           }
         } else if (msg.type === 'sync-step-2' || msg.type === 'update') {
+          // Viewers are read-only: do not apply edits
+          if (ws.userRole === 'viewer') {
+            return;
+          }
           // Apply client update to room doc with origin ws (doc 'update' event broadcasts to others)
           const update = Buffer.from(msg.update, 'base64');
           Y.applyUpdate(room.doc, update, ws);

@@ -32,7 +32,7 @@ import {
 } from '@/components/ui/select';
 import ThemeToggle from '@/components/site/ThemeToggle';
 import Logo from '@/components/site/Logo';
-import { useAuth, apiFetch } from '@/lib/auth';
+import { useAuth, apiFetch, getToken } from '@/lib/auth';
 import { ConfluoCollabProvider, uint8ArrayToBase64 } from '@/lib/collab-provider';
 import { toast } from 'sonner';
 
@@ -563,7 +563,7 @@ export default function EditorPage() {
   useEffect(() => {
     if (!user || !id || !doc) return;
 
-    const provider = new ConfluoCollabProvider(id, user, { initialYjsState: doc.yjsState });
+    const provider = new ConfluoCollabProvider(id, user, { initialYjsState: doc.yjsState, token: getToken() });
     providerRef.current = provider;
 
     provider.on('status', ({ status }) => {

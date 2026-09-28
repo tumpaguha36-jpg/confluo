@@ -59,21 +59,27 @@ async function getUser(request, db) {
 }
 
 function roleForUser(doc, userId) {
-  if (!userId) return null
+  if (!userId || !doc) return null
   if (doc.ownerId === userId) return 'owner'
-  const c = (doc.collaborators || []).find((c) => c.userId === userId)
+  const collabs = Array.isArray(doc.collaborators)
+    ? doc.collaborators
+    : (typeof doc.collaborators === 'string' ? JSON.parse(doc.collaborators || '[]') : [])
+  const c = collabs.find((c) => c.userId === userId)
   return c ? c.role : null
 }
 
 async function enrichCollaborators(db, doc) {
-  const ids = [doc.ownerId, ...(doc.collaborators || []).map((c) => c.userId)]
+  const collabs = Array.isArray(doc.collaborators)
+    ? doc.collaborators
+    : (typeof doc.collaborators === 'string' ? JSON.parse(doc.collaborators || '[]') : [])
+  const ids = [doc.ownerId, ...collabs.map((c) => c.userId)]
   const users = await db.collection('users').find({ id: { $in: ids } }).toArray()
   const map = {}
   users.forEach((u) => { map[u.id] = u })
   const list = []
-  if (map[doc.ownerId]) list.push({ ...publicUser(map[doc.ownerId]), role: 'owner' })
-  ;(doc.collaborators || []).forEach((c) => {
-    if (map[c.userId]) list.push({ ...publicUser(map[c.userId]), role: c.role })
+  if (map[doc.ownerId]) list.push({ ...publicUser(map[doc.ownerId]), role: 'owner', createdAt: doc.createdAt })
+  collabs.forEach((c) => {
+    if (map[c.userId]) list.push({ ...publicUser(map[c.userId]), role: c.role, createdAt: c.createdAt || null })
   })
   return list
 }
@@ -82,11 +88,13 @@ let collabServerStarted = false;
 function ensureCollabServer() {
   if (collabServerStarted) return;
   collabServerStarted = true;
-  try {
-    const { startCollabServer } = require('../../../server/collab-server');
-    startCollabServer();
-  } catch (e) {
-    // Ignore if already running
+  if (typeof process !== 'undefined' && process.release?.name === 'node' && !process.env.VERCEL && process.env.NEXT_PHASE !== 'phase-production-build') {
+    try {
+      const { startCollabServer } = require('@/server/collab-server');
+      startCollabServer();
+    } catch (e) {
+      // Ignore if already running
+    }
   }
 }
 
@@ -153,7 +161,7 @@ async function handleRoute(request, { params }) {
     }
 
     // ---------- DOCS ----------
-    if (route === '/docs' && method === 'GET') {
+    if ((route === '/docs' || route === '/documents') && method === 'GET') {
       const user = await getUser(request, db)
       if (!user) return err('Unauthenticated', 401)
       const docs = await db.collection('docs').find({
@@ -175,7 +183,7 @@ async function handleRoute(request, { params }) {
       return json({ docs: result })
     }
 
-    if (route === '/docs' && method === 'POST') {
+    if ((route === '/docs' || route === '/documents') && method === 'POST') {
       const user = await getUser(request, db)
       if (!user) return err('Unauthenticated', 401)
       const body = await request.json().catch(() => ({}))
@@ -196,7 +204,7 @@ async function handleRoute(request, { params }) {
       return json({ doc: { ...cleanDoc, role: 'owner', collaborators: await enrichCollaborators(db, doc) } }, 201)
     }
 
-    const docMatch = route.match(/^\/docs\/([^/]+)$/)
+    const docMatch = route.match(/^\/(?:docs|documents)\/([^/]+)$/)
     if (docMatch) {
       const docId = docMatch[1]
       const user = await getUser(request, db)
@@ -324,7 +332,7 @@ async function handleRoute(request, { params }) {
     }
 
     // ---------- SHARE / COLLABORATORS ----------
-    const shareMatch = route.match(/^\/docs\/([^/]+)\/share$/)
+    const shareMatch = route.match(/^\/(?:docs|documents)\/([^/]+)\/share$/)
     if (shareMatch) {
       const docId = shareMatch[1]
       const user = await getUser(request, db)
@@ -338,20 +346,42 @@ async function handleRoute(request, { params }) {
         const body = await request.json().catch(() => ({}))
         const email = (body.email || '').trim().toLowerCase()
         const newRole = body.role || 'editor'
+        if (!email) return err('Email is required', 400)
         if (!['viewer', 'commenter', 'editor'].includes(newRole)) return err('Invalid role', 400)
         const target = await db.collection('users').findOne({ email })
-        if (!target) return err('No Confluo user found with that email', 404)
+        if (!target) return err('User must create an account before they can be added.', 404)
         if (target.id === doc.ownerId) return err('That user is the owner', 400)
-        const collaborators = (doc.collaborators || []).filter((c) => c.userId !== target.id)
-        collaborators.push({ userId: target.id, role: newRole })
+
+        const now = new Date().toISOString()
+        const collabs = Array.isArray(doc.collaborators)
+          ? doc.collaborators
+          : (typeof doc.collaborators === 'string' ? JSON.parse(doc.collaborators || '[]') : [])
+        const collaborators = collabs.filter((c) => c.userId !== target.id)
+        collaborators.push({
+          userId: target.id,
+          role: newRole,
+          createdAt: now,
+        })
         await db.collection('docs').updateOne({ id: docId }, { $set: { collaborators, updatedAt: new Date() } })
+
+        // Also sync into normalized document_members collection
+        try {
+          await db.collection('document_members').insertOne({
+            id: `${docId}_${target.id}`,
+            documentId: docId,
+            userId: target.id,
+            role: newRole,
+            createdAt: now,
+          })
+        } catch (_) {}
+
         const updated = await db.collection('docs').findOne({ id: docId })
         return json({ collaborators: await enrichCollaborators(db, updated) }, 201)
       }
     }
 
     // change role / remove collaborator
-    const collabMatch = route.match(/^\/docs\/([^/]+)\/collaborators\/([^/]+)$/)
+    const collabMatch = route.match(/^\/(?:docs|documents)\/([^/]+)\/collaborators\/([^/]+)$/)
     if (collabMatch) {
       const [, docId, targetId] = collabMatch
       const user = await getUser(request, db)
@@ -365,21 +395,36 @@ async function handleRoute(request, { params }) {
         const body = await request.json().catch(() => ({}))
         const newRole = body.role
         if (!['viewer', 'commenter', 'editor'].includes(newRole)) return err('Invalid role', 400)
-        const collaborators = (doc.collaborators || []).map((c) => c.userId === targetId ? { ...c, role: newRole } : c)
+        const collabs = Array.isArray(doc.collaborators)
+          ? doc.collaborators
+          : (typeof doc.collaborators === 'string' ? JSON.parse(doc.collaborators || '[]') : [])
+        const collaborators = collabs.map((c) => c.userId === targetId ? { ...c, role: newRole } : c)
         await db.collection('docs').updateOne({ id: docId }, { $set: { collaborators } })
+        try {
+          await db.collection('document_members').updateOne(
+            { documentId: docId, userId: targetId },
+            { $set: { role: newRole } }
+          )
+        } catch (_) {}
         const updated = await db.collection('docs').findOne({ id: docId })
         return json({ collaborators: await enrichCollaborators(db, updated) })
       }
       if (method === 'DELETE') {
-        const collaborators = (doc.collaborators || []).filter((c) => c.userId !== targetId)
+        const collabs = Array.isArray(doc.collaborators)
+          ? doc.collaborators
+          : (typeof doc.collaborators === 'string' ? JSON.parse(doc.collaborators || '[]') : [])
+        const collaborators = collabs.filter((c) => c.userId !== targetId)
         await db.collection('docs').updateOne({ id: docId }, { $set: { collaborators } })
+        try {
+          await db.collection('document_members').deleteOne({ documentId: docId, userId: targetId })
+        } catch (_) {}
         const updated = await db.collection('docs').findOne({ id: docId })
         return json({ collaborators: await enrichCollaborators(db, updated) })
       }
     }
 
     // create share link
-    const linkMatch = route.match(/^\/docs\/([^/]+)\/share-link$/)
+    const linkMatch = route.match(/^\/(?:docs|documents)\/([^/]+)\/share-link$/)
     if (linkMatch && method === 'POST') {
       const docId = linkMatch[1]
       const user = await getUser(request, db)
